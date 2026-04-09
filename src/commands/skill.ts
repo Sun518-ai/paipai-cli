@@ -1,7 +1,7 @@
-// src/commands/skill.ts — paipai skill list / run / init
+// src/commands/skill.ts — paipai skill list / run / init / remove
 
 import { join, relative } from 'node:path';
-import { mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readdir, rm } from 'node:fs/promises';
 import { loadAllSkills } from '../core/loader.ts';
 import { runSkill, runStep } from '../core/runner.ts';
 import { log } from '../utils/log.ts';
@@ -43,6 +43,24 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
     }
     if (rawArgs.includes(`--${argDef.name}`) && !args[argDef.name]) {
       args[argDef.name] = true;
+    }
+  }
+
+  // 必填参数校验
+  for (const argDef of skill.meta.args) {
+    const isRequired = argDef.required === true;
+    const hasDefault = argDef.default !== undefined;
+    const wasProvided = args[argDef.name] !== undefined;
+    if (isRequired && !hasDefault && !wasProvided) {
+      log.error(`Missing required argument: --${argDef.name}`);
+      if (argDef.description) {
+        log.info(`  说明: ${argDef.description}`);
+      }
+      process.exit(1);
+    }
+    // 应用默认值
+    if (!wasProvided && hasDefault) {
+      args[argDef.name] = argDef.default;
     }
   }
 
@@ -125,4 +143,22 @@ echo "Hello, \$TARGET!"
   log.success(`Skill "${safeName}" created at ${skillDir}`);
   log.info('Edit SKILL.md to configure metadata, then run:');
   log.info(`  paipai run ${safeName}`);
+}
+
+export async function cmdSkillRemove(name: string) {
+  const skillDir = join(SKILLS_DIR, name);
+  const skills = await loadAllSkills(SKILLS_DIR);
+  const skill = skills.find(s => s.name === name);
+  if (!skill) {
+    log.error(`Skill "${name}" not found. Run "paipai skill list" to see available skills.`);
+    process.exit(1);
+  }
+
+  try {
+    await rm(skillDir, { recursive: true, force: true });
+    log.success(`Skill "${name}" removed.`);
+  } catch (e) {
+    log.error(`Failed to remove skill: ${skillDir}`);
+    process.exit(1);
+  }
 }

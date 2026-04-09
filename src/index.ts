@@ -1,7 +1,7 @@
 // src/index.ts — CLI 入口
 
 import { log } from './utils/log.ts';
-import { cmdSkillList, cmdSkillRun, cmdSkillInit } from './commands/skill.ts';
+import { cmdSkillList, cmdSkillRun, cmdSkillInit, cmdSkillRemove } from './commands/skill.ts';
 import { cmdDoctor } from './commands/doctor.ts';
 
 const [, , cmd, subcmd, ...rest] = process.argv;
@@ -14,6 +14,7 @@ function printHelp() {
     paipai skill list                      列出所有技能
     paipai run <name> [--arg value...]    运行指定技能
     paipai skill:init <name>              创建新技能
+    paipai skill:remove <name>            删除技能
     paipai doctor                          环境检查
     paipai help                            显示帮助
 
@@ -42,6 +43,13 @@ async function main() {
           process.exit(1);
         }
         await cmdSkillInit(name);
+      } else if (subcmd === 'remove') {
+        const name = rest[0];
+        if (!name) {
+          log.error('Usage: paipai skill:remove <name>');
+          process.exit(1);
+        }
+        await cmdSkillRemove(name);
       } else {
         log.error(`Unknown subcommand: skill ${subcmd}`);
         printHelp();
