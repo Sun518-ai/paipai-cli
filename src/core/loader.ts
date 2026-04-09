@@ -15,6 +15,41 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
     steps: [],
   };
 
+  // 1. 从 YAML frontmatter 提取 name / description
+  const front = content.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (front) {
+    const frontLines = front[1].split('\n');
+    let i = 0;
+    while (i < frontLines.length) {
+      const nameMatch = frontLines[i].match(/^(\w+):\s*(.*)/);
+      if (!nameMatch) { i++; continue; }
+      const [, key, firstVal] = nameMatch;
+
+      if (key === 'name') {
+        meta.name = firstVal.trim();
+      } else if (key === 'description') {
+        // 处理 YAML 折叠标量 >-  |-  >  |
+        const folded = firstVal.match(/^([>|]-?)\s*/)?.[1];
+        if (folded) {
+          // 收集后续缩进行
+          const lines = [firstVal.replace(/^[>|]-?\s*/, '')];
+          i++;
+          while (i < frontLines.length && /^\s+/.test(frontLines[i])) {
+            lines.push(frontLines[i].replace(/^\s+/, ''));
+            i++;
+          }
+          meta.description = lines.join(' ').trim();
+          continue;
+        } else {
+          meta.description = firstVal.replace(/^['"]|['"]$/g, '').trim();
+        }
+      }
+      i++;
+    }
+    content = content.slice(front[0].length);
+  }
+
+  // 2. 解析 Markdown body（## sections + - key: value）
   const lines = content.split('\n');
   let currentSection = '';
   let currentArgs: Partial<SkillArg> = {};
@@ -25,7 +60,6 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
 
     // 章节标题
     if (line.startsWith('#')) {
-      // flush current arg
       if (currentSection === '## args' && currentArgs.name) {
         meta.args!.push(currentArgs as SkillArg);
         currentArgs = {};
@@ -44,6 +78,8 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
       if (currentSection === '## name') {
         meta.name = value;
       } else if (currentSection === '## description') {
+        // 跳过 YAML 折叠标记行（如 description: >-）
+        if (['>-', '|-', '>', '|'].some(f => line.includes(f))) continue;
         meta.description = value;
       } else if (currentSection === '## triggers') {
         meta.triggers!.push(value);
@@ -56,11 +92,10 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
         else if (key === 'default') currentArgs.default = value;
         else if (key === 'description') currentArgs.description = value;
       }
-    } else if ((currentSection === '## name' || currentSection === '## description') && line) {
-      // 裸文本值（无 - 前缀）
+    } else if (currentSection === '## description' && line) {
+      // 裸文本行（无 - 前缀），YAML 多行折叠继续累积
       const v = line.replace(/^["']|["']$/g, '');
-      if (currentSection === '## name') meta.name = v;
-      else meta.description = v;
+      meta.description = (meta.description || '') + v + ' ';
     }
   }
 
