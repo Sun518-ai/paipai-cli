@@ -1,28 +1,27 @@
 // src/core/runner.ts — 执行 Skill 的 main.sh 或 stepN 脚本
 
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { RunContext } from './types.ts';
 
-export function runSkill(ctx: RunContext): Promise<number> {
+function buildEnv(args: Record<string, string | number | boolean>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(args).map(([k, v]) => [`SKILL_ARG_${k.toUpperCase().replace(/-/g, '_')}`, String(v)])
+  );
+}
+
+function runScript(scriptPath: string, ctx: RunContext): Promise<number> {
   return new Promise((resolve, reject) => {
     const { skill, args, skillDir } = ctx;
-    if (!skill.mainPath) {
-      reject(new Error(`Skill "${skill.name}" has no main.sh or main.ts`));
-      return;
-    }
-
     const env = {
       ...process.env,
       SKILL_NAME: skill.name,
       SKILL_DIR: skillDir,
       PAIPAI_DEBUG: '1',
-      ...Object.fromEntries(
-        Object.entries(args).map(([k, v]) => [`SKILL_ARG_${k.toUpperCase()}`, String(v)])
-      ),
+      ...buildEnv(args),
     };
 
-    const child = spawn('bash', [skill.mainPath], {
+    const child = spawn('bash', [scriptPath], {
       cwd: skillDir,
       env,
       stdio: 'inherit',
@@ -33,26 +32,14 @@ export function runSkill(ctx: RunContext): Promise<number> {
   });
 }
 
+export function runSkill(ctx: RunContext): Promise<number> {
+  const { skill } = ctx;
+  if (!skill.mainPath) {
+    return Promise.reject(new Error(`Skill "${skill.name}" has no main.sh or main.ts`));
+  }
+  return runScript(skill.mainPath, ctx);
+}
+
 export async function runStep(stepPath: string, ctx: RunContext): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const { args, skillDir } = ctx;
-    const env = {
-      ...process.env,
-      SKILL_NAME: ctx.skill.name,
-      SKILL_DIR: skillDir,
-      PAIPAI_DEBUG: '1',
-      ...Object.fromEntries(
-        Object.entries(args).map(([k, v]) => [`SKILL_ARG_${k.toUpperCase()}`, String(v)])
-      ),
-    };
-
-    const child = spawn('bash', [stepPath], {
-      cwd: skillDir,
-      env,
-      stdio: 'inherit',
-    });
-
-    child.on('exit', code => resolve(code ?? 0));
-    child.on('error', reject);
-  });
+  return runScript(stepPath, ctx);
 }
