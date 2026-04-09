@@ -1,246 +1,150 @@
 #!/usr/bin/env bash
-# main.sh — YouTube Video Info Skill
-# Orchestrates: player API → captions → get_watch → search
-# Usage:
-#   bash main.sh --video-id <VIDEO_ID> [--caption-lang <LANG>]
-#   bash main.sh --search "<QUERY>"
+# main.sh — YouTube 视频信息（Cookie 授权版）
+# 特性：TUI 授权引导 + 本地缓存 + Cookie 持久化
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SKILL_DIR}/lib/cache.sh"
+source "${SKILL_DIR}/lib/auth.sh"
+
+VIDEO_ID="${SKILL_ARG_VIDEO_ID:-}"
+SEARCH_QUERY="${SKILL_ARG_SEARCH:-}"
+LIMIT="${SKILL_ARG_LIMIT:-10}"
+NOCACHE="${SKILL_ARG_NOCACHE:-false}"
+
+# 全局 cookie（由 auth 填充）
+COOKIE=""
 
 ###############################################################################
-# Cookie & Auth Header Persistence
+# 初始化
 ###############################################################################
-SKILL_NAME="youtube-video-info"
-SKILL_DOMAIN="www.youtube.com"
+init() {
+    cache_init
 
-# Support both Mira NAS path patterns
-if [ -n "${MIRA_CURRENT_USERID:-}" ]; then
-  USERDATA_DIR="/opt/tiger/mira_nas/userdata/$MIRA_CURRENT_USERID"
-else
-  USERDATA_DIR="${SCRIPT_DIR}/.userdata"
-fi
-MIRA_COOKIE_DIR="$USERDATA_DIR/$SKILL_NAME"
-COOKIE_FILE="$MIRA_COOKIE_DIR/.cookie"
-DOMAIN_COOKIE_FILE="$USERDATA_DIR/$SKILL_DOMAIN/.cookie"
+    if ! auth_has_valid; then
+        echo ""
+        echo "⚠️  未检测到有效授权"
+        if [ -t 0 ]; then  # 如果是终端，尝试交互
+            auth_interactive
+        else
+            echo "  💡 非交互模式，请先配置授权："
+            echo "  方式1（推荐）："
+            echo "    COOKIE='SID=xxx; HSID=yyy; ...' paipai run youtube --video-id xxx"
+            echo ""
+            echo "  方式2：设置持久化 Cookie"
+            echo "    echo 'COOKIE=SID=xxx' >> ~/.config/paipai/youtube-video-info/.cookie"
+        fi
+    fi
 
-save_cookie() {
-  local val="$1"
-  mkdir -p "$MIRA_COOKIE_DIR" 2>/dev/null || true
-  if echo "$val" > "$COOKIE_FILE" 2>/dev/null; then
-    return 0
-  fi
-  echo "[warn] Cookie 持久化失败，仅在本次会话中使用" >&2
-  return 1
+    # 加载 cookie（优先级：环境变量 > 文件）
+    COOKIE=$(auth_get_cookie)
 }
 
-load_cookie() {
-  if [ -f "$COOKIE_FILE" ] && [ -s "$COOKIE_FILE" ]; then
-    cat "$COOKIE_FILE"; return
-  fi
-  if [ -f "$DOMAIN_COOKIE_FILE" ] && [ -s "$DOMAIN_COOKIE_FILE" ]; then
-    cat "$DOMAIN_COOKIE_FILE"; return
-  fi
-  echo "${COOKIE:-}"
-}
-
-if [ -n "${COOKIE:-}" ]; then
-  save_cookie "$COOKIE"
-else
-  COOKIE="$(load_cookie)"
-fi
-
-if [ -z "$COOKIE" ]; then
-  echo "Cookie 缺失，请通过以下链接完成授权并获取 Cookie（安装了 Mira 插件会自动提取）："
-  echo "https://www.youtube.com/watch?mira_skill_cookie=1&MIRA_ORIGIN_URL=__MIRA_ORIGIN_URL__"
-  echo "或在对话中直接提供 Cookie（如 COOKIE=xxx），将自动持久化。"
-  exit 1
-fi
-export COOKIE
-
-# Auth headers persistence
-AUTH_HEADERS_FILE="$MIRA_COOKIE_DIR/.auth_headers"
-DOMAIN_AUTH_HEADERS_FILE="$USERDATA_DIR/$SKILL_DOMAIN/.auth_headers"
-
-_AUTH_FILE=""
-if [ -f "$AUTH_HEADERS_FILE" ] && [ -s "$AUTH_HEADERS_FILE" ]; then
-  _AUTH_FILE="$AUTH_HEADERS_FILE"
-elif [ -f "$DOMAIN_AUTH_HEADERS_FILE" ] && [ -s "$DOMAIN_AUTH_HEADERS_FILE" ]; then
-  _AUTH_FILE="$DOMAIN_AUTH_HEADERS_FILE"
-fi
-if [ -n "$_AUTH_FILE" ]; then
-  AUTHORIZATION="${AUTHORIZATION:-$(jq -r '.AUTHORIZATION // empty' "$_AUTH_FILE" 2>/dev/null || true)}"
-fi
-
-# Save auth headers if provided via env
-if [ -n "${AUTHORIZATION:-}" ]; then
-  mkdir -p "$MIRA_COOKIE_DIR" 2>/dev/null || true
-  printf '{"AUTHORIZATION": "%s"}\n' "$AUTHORIZATION" > "$AUTH_HEADERS_FILE" 2>/dev/null || true
-fi
-
-export AUTHORIZATION="${AUTHORIZATION:-}"
-
 ###############################################################################
-# Parse arguments
+# 搜索模式
 ###############################################################################
-VIDEO_ID=""
-SEARCH_QUERY=""
-CAPTION_LANG="en"
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --video-id)
-      VIDEO_ID="$2"; shift 2 ;;
-    --search)
-      SEARCH_QUERY="$2"; shift 2 ;;
-    --caption-lang)
-      CAPTION_LANG="$2"; shift 2 ;;
-    *)
-      echo "Unknown option: $1" >&2; exit 1 ;;
-  esac
-done
-
-# Default video ID if none provided and no search
-if [ -z "$VIDEO_ID" ] && [ -z "$SEARCH_QUERY" ]; then
-  VIDEO_ID="JS1KKbbwZWw"
-fi
-
-###############################################################################
-# Mode 1: Search
-###############################################################################
-if [ -n "$SEARCH_QUERY" ]; then
-  echo "=== 搜索: $SEARCH_QUERY ==="
-  SEARCH_RESULT=$(bash "$SCRIPT_DIR/step2_search.sh" "$SEARCH_QUERY" 2>&1) || true
-  HTTP_ERR=$(echo "$SEARCH_RESULT" | jq -r '.error.code // empty' 2>/dev/null || true)
-  if [ -n "$HTTP_ERR" ] && [ "$HTTP_ERR" != "null" ]; then
-    echo "[error] Search API 返回错误 code=$HTTP_ERR" >&2
-    echo "$SEARCH_RESULT" | jq -r '.error.message // .' 2>/dev/null || echo "$SEARCH_RESULT"
-    exit 1
-  fi
-
-  # Extract search results
-  echo "$SEARCH_RESULT" | jq -r '
-    [.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents[].itemSectionRenderer.contents[]? |
-      select(.videoRenderer) |
-      .videoRenderer |
-      {
-        videoId: .videoId,
-        title: (.title.runs[0].text // "N/A"),
-        channel: (.ownerText.runs[0].text // "N/A"),
-        viewCount: (.viewCountText.simpleText // "N/A"),
-        publishedTime: (.publishedTimeText.simpleText // "N/A"),
-        duration: (.lengthText.simpleText // "N/A")
-      }
-    ] | .[:10]' 2>/dev/null || echo "$SEARCH_RESULT" | head -200
-
-  # If no video ID, exit after search
-  if [ -z "$VIDEO_ID" ]; then
-    exit 0
-  fi
-fi
-
-###############################################################################
-# Mode 2: Video Info
-###############################################################################
-echo "=== 获取视频信息: $VIDEO_ID ==="
-
-# Step 1: Player API
-echo "[step1] Calling Player API..."
-PLAYER_RESULT=$(bash "$SCRIPT_DIR/step1_player.sh" "$VIDEO_ID" 2>&1) || true
-
-# Check for errors
-PLAY_STATUS=$(echo "$PLAYER_RESULT" | jq -r '.playabilityStatus.status // empty' 2>/dev/null || true)
-if [ "$PLAY_STATUS" = "ERROR" ]; then
-  echo "[error] Player API 错误: status=$PLAY_STATUS" >&2
-  echo "$PLAYER_RESULT" | jq -r '.playabilityStatus.reason // .' 2>/dev/null || echo "$PLAYER_RESULT" | head -200
-  exit 1
-fi
-if [ "$PLAY_STATUS" = "LOGIN_REQUIRED" ]; then
-  echo "[warn] 该视频需要登录才能访问完整信息 (LOGIN_REQUIRED)" >&2
-  echo "[warn] 当前 Cookie 可能已过期或无效，部分数据（字幕、推荐）可能不可用" >&2
-  REASON=$(echo "$PLAYER_RESULT" | jq -r '.playabilityStatus.reason // ""' 2>/dev/null || true)
-  [ -n "$REASON" ] && echo "[warn] 原因: $REASON" >&2
-fi
-
-# Extract video metadata
-HAS_DETAILS=$(echo "$PLAYER_RESULT" | jq -r '.videoDetails.videoId // empty' 2>/dev/null || true)
-
-echo ""
-echo "--- 视频元数据 ---"
-if [ -n "$HAS_DETAILS" ]; then
-  echo "$PLAYER_RESULT" | jq '{
-    videoId: .videoDetails.videoId,
-    title: .videoDetails.title,
-    author: .videoDetails.author,
-    channelId: .videoDetails.channelId,
-    lengthSeconds: .videoDetails.lengthSeconds,
-    viewCount: .videoDetails.viewCount,
-    description: (.videoDetails.shortDescription // "N/A"),
-    keywords: (.videoDetails.keywords // []),
-    isPrivate: .videoDetails.isPrivate,
-    isLiveContent: .videoDetails.isLiveContent,
-    thumbnail: (.videoDetails.thumbnail.thumbnails[-1].url // "N/A"),
-    publishDate: (.microformat.playerMicroformatRenderer.publishDate // "N/A"),
-    category: (.microformat.playerMicroformatRenderer.category // "N/A")
-  }' 2>/dev/null
-else
-  echo "(videoDetails 为空，该视频可能不存在、已下架或需要登录)"
-  echo "$PLAYER_RESULT" | jq -r '.playabilityStatus // .' 2>/dev/null | head -20
-fi
-
-# Step 2: Try to get captions
-echo ""
-echo "--- 字幕信息 ---"
-CAPTION_TRACKS=$(echo "$PLAYER_RESULT" | jq -r '.captions.playerCaptionsTracklistRenderer.captionTracks // []' 2>/dev/null || echo "[]")
-TRACK_COUNT=$(echo "$CAPTION_TRACKS" | jq 'length' 2>/dev/null || echo "0")
-
-if [ "$TRACK_COUNT" -gt 0 ] 2>/dev/null; then
-  echo "可用字幕轨道:"
-  echo "$CAPTION_TRACKS" | jq -r '.[] | "  - [\(.languageCode)] \(.name.simpleText // "N/A") (kind: \(.kind // "manual"))"' 2>/dev/null || true
-
-  # Find the requested language or fallback to first track
-  CAPTION_URL=$(echo "$CAPTION_TRACKS" | jq -r --arg lang "$CAPTION_LANG" '
-    (map(select(.languageCode == $lang)) | first // .[0]).baseUrl // empty
-  ' 2>/dev/null || true)
-
-  if [ -n "$CAPTION_URL" ]; then
+do_search() {
+    echo "=== 搜索: $SEARCH_QUERY ==="
     echo ""
-    echo "[step4] 获取字幕 (lang=$CAPTION_LANG)..."
-    CAPTION_RESULT=$(bash "$SCRIPT_DIR/step4_captions.sh" "$CAPTION_URL" 2>&1) || true
-    # Extract caption text
-    echo "$CAPTION_RESULT" | jq -r '
-      .events[]? |
-      select(.segs) |
-      (.tStartMs / 1000 | floor | "\(. / 60 | floor):\(. % 60 | tostring | if length == 1 then "0" + . else . end)") as $ts |
-      "\($ts) \([.segs[]?.utf8] | join(""))"
-    ' 2>/dev/null | head -50 || true
-    TOTAL_LINES=$(echo "$CAPTION_RESULT" | jq '[.events[]? | select(.segs)] | length' 2>/dev/null || echo "0")
-    echo "... (共 $TOTAL_LINES 条字幕)"
-  else
-    echo "未找到 lang=$CAPTION_LANG 的字幕"
-  fi
+
+    local cache_key
+    cache_key="search_$(echo "$SEARCH_QUERY" | tr ' ' '_')_${LIMIT}"
+
+    if [ "$NOCACHE" != "true" ]; then
+        local cached
+        cached=$(cache_get "$(cache_key "$cache_key")" 2>/dev/null || true)
+        if [ -n "$cached" ]; then
+            echo "📦 使用缓存（无 cache: --nocache 跳过）"
+            echo "$cached"
+            return 0
+        fi
+    fi
+
+    local result
+    result=$("${SKILL_DIR}/step2_search.sh" 2>&1) || {
+        echo "❌ 搜索失败: $result" >&2
+        exit 1
+    }
+
+    echo "$result"
+    echo "$result" | cache_put "$(cache_key "$cache_key")"
+}
+
+###############################################################################
+# 视频详情模式
+###############################################################################
+do_video() {
+    if [ -z "$VIDEO_ID" ]; then
+        echo "❌ 请提供 --video-id 参数" >&2
+        echo "示例: paipai run youtube --video-id dQw4w9WgXcQ" >&2
+        exit 1
+    fi
+
+    echo "=== 视频信息: $VIDEO_ID ==="
+    echo ""
+
+    # 检查缓存
+    local cache_key
+    cache_key="video_${VIDEO_ID}"
+
+    if [ "$NOCACHE" != "true" ]; then
+        local cached
+        cached=$(cache_get "$(cache_key "$cache_key")" 2>/dev/null || true)
+        if [ -n "$cached" ]; then
+            echo "📦 使用缓存（无 cache: --nocache 跳过）"
+            echo "$cached"
+            echo ""
+            echo "💡 提示: 使用 --nocache 强制刷新"
+            return 0
+        fi
+    fi
+
+    # Step 1: Player API
+    local player_result
+    player_result=$("${SKILL_DIR}/step1_player.sh" 2>&1) || true
+
+    # Step 3: Watch (推荐视频)
+    local watch_result
+    watch_result=$("${SKILL_DIR}/step3_get_watch.sh" 2>&1) || true
+
+    # Step 4: Captions
+    local captions_result
+    captions_result=$("${SKILL_DIR}/step4_captions.sh" 2>&1) || true
+
+    # 组装输出
+    echo "$player_result"
+    echo ""
+    echo "--- 推荐视频 ---"
+    echo "$watch_result"
+    echo ""
+    echo "--- 字幕 ---"
+    echo "$captions_result"
+
+    # 缓存完整输出
+    local full_output
+    full_output=$(echo "$player_result"; echo ""; echo "--- 推荐视频 ---"; echo "$watch_result"; echo ""; echo "--- 字幕 ---"; echo "$captions_result")
+    echo "$full_output" | cache_put "$(cache_key "$cache_key")"
+}
+
+###############################################################################
+# 主入口
+###############################################################################
+init
+
+if [ -n "$SEARCH_QUERY" ]; then
+    do_search
+elif [ -n "$VIDEO_ID" ]; then
+    do_video
 else
-  echo "该视频无字幕或无法获取字幕信息"
+    echo "❌ 请提供 --video-id 或 --search 参数"
+    echo ""
+    echo "示例："
+    echo "  paipai run youtube --video-id dQw4w9WgXcQ"
+    echo "  paipai run youtube --search 'python tutorial'"
+    echo "  paipai run youtube --video-id dQw4w9WgXcQ --nocache  # 强制刷新"
+    exit 1
 fi
 
-# Step 3: Get Watch (recommendations)
 echo ""
-echo "--- 推荐视频 ---"
-echo "[step3] Calling Get Watch API..."
-WATCH_RESULT=$(bash "$SCRIPT_DIR/step3_get_watch.sh" "$VIDEO_ID" 2>&1) || true
-
-# Try to extract recommended videos from secondaryResults
-echo "$WATCH_RESULT" | jq -r '
-  [.. | .compactVideoRenderer? // empty |
-    {
-      videoId: .videoId,
-      title: (.title.simpleText // (.title.runs[0].text // "N/A")),
-      channel: (.longBylineText.runs[0].text // "N/A"),
-      viewCount: (.viewCountText.simpleText // "N/A"),
-      duration: (.lengthText.simpleText // "N/A")
-    }
-  ] | unique_by(.videoId) | .[:10]
-' 2>/dev/null || echo "(推荐视频解析失败，可能返回格式变化)"
-
-echo ""
-echo "=== 完成 ==="
+echo "✅ 完成"
