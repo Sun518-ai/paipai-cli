@@ -1,8 +1,31 @@
 // src/index.ts — CLI 入口
 
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { log } from './utils/log.ts';
 import { cmdSkillList, cmdSkillRun, cmdSkillInit, cmdSkillRemove } from './commands/skill.ts';
 import { cmdDoctor } from './commands/doctor.ts';
+
+// 加载 ~/.paipairc 配置文件，注入环境变量
+function loadRc() {
+  const rcPath = join(homedir(), '.paipairc');
+  if (!existsSync(rcPath)) return;
+  const lines = readFileSync(rcPath, 'utf-8').split('\n');
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    const val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    if (key && val && !process.env[key]) {
+      process.env[key] = val;
+    }
+  }
+}
+
+loadRc();
 
 const [, , cmd, subcmd, ...rest] = process.argv;
 
