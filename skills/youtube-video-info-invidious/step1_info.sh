@@ -13,7 +13,7 @@ echo "=== 视频信息: $VIDEO_ID ==="
 echo ""
 
 # Try oEmbed API first (no cookie needed)
-RESULT=$(curl -s --max-time 10 \
+RESULT=$(curl -s --connect-timeout 5 --max-time 10 \
   "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$VIDEO_ID&format=json" 2>&1)
 
 if [ -n "$RESULT" ] && echo "$RESULT" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null | grep -q "ok"; then

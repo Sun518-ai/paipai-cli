@@ -158,6 +158,46 @@ bash "$SKILL_DIR/step1_hello.sh"
 
 ---
 
+## 5. 已知问题（v0.1.0）
+
+| # | 问题 | 严重程度 | 状态 |
+|---|------|----------|------|
+| 1 | 必填参数不校验，缺失时报 runner 错误而非友好的提示 | 中 | 待修复 |
+| 2 | `SKILL.md` 裸文本值（无 `-` 前缀）解析逻辑脆弱 | 中 | 临时代码 |
+| 3 | 直接执行 `bash main.sh` 时 SKILL_DIR/SKILL_NAME 为空 | 低 | 已知限制 |
+| 4 | 无配置文件，无法自定义 skills 目录路径 | 低 | 待开发 |
+| 5 | `skill remove` 命令缺失，无法删除技能 | 低 | 待开发 |
+
+## 6. 架构决策记录（ADR）
+
+### ADR-001：参数环境变量命名规范
+- **决定**：参数名中的连字符转下划线注入环境变量（`video-id` → `SKILL_ARG_VIDEO_ID`）
+- **原因**：bash 不支持连字符作为环境变量名
+- **影响**：SKILL.md 中参数名避免使用连字符，或使用驼峰
+
+### ADR-002：SKILL.md 解析策略
+- **决定**：兼容两种格式 —— YAML frontmatter（`---...---`）+ 裸 Markdown `## section` 段落
+- **原因**：feishu cli 使用 frontmatter，OpenClaw 使用 Markdown 格式，保留两者兼容
+- **风险**：解析逻辑复杂，边界情况多
+
+### ADR-003：Skill 执行方式
+- **决定**：优先执行 `main.sh`，无 main.sh 时按顺序执行 `stepN_*.sh`
+- **原因**：main.sh 适合复杂流程编排，stepN 适合简单顺序执行
+
+## 7. 下一步改进方向
+
+| 优先级 | 改进项 | 说明 |
+|--------|--------|------|
+| P1 | args 参数校验 | 必填参数缺失时友好报错 |
+| P2 | skill remove 命令 | 删除技能目录 |
+| P2 | 配置文件 | `.paipairc` 自定义 skills 路径 |
+| P3 | `--json` 结构化输出 | 便于程序消费 |
+| P3 | skill 别名 | `paipai run yt` 代替长名 |
+| P3 | skill update | 远程更新技能包 |
+| P3 | skill search | 技能列表过滤 |
+
+---
+
 ## 5. 参考来源
 
 - feishu cli（GitHub: larksuite/cli）：命令分组架构
