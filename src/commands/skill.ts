@@ -18,8 +18,12 @@ export async function cmdSkillList() {
 
   log.bold(`\n  🧩 Available Skills (${skills.length})\n`);
   for (const s of skills) {
-    const trigger = s.meta.triggers[0] || `paipai run ${s.name}`;
-    log.skill(`  ${s.name.padEnd(20)} ${s.meta.description || '(no description)'}`);
+    const trigger = (s.meta.triggers[0] || `paipai run ${s.name}`);
+    // 截断过长描述，保持格式整洁
+    const desc = (s.meta.description || '').replace(/\s+/g, ' ').substring(0, 60);
+    process.stdout.write(`  ${s.name.padEnd(20)} ${desc}`);
+    if (desc.length === 60) process.stdout.write('…');
+    process.stdout.write('\n');
     log.debug(`    triggers: ${s.meta.triggers.join(', ')} | steps: ${s.stepPaths.length}`);
   }
   console.log();
@@ -33,17 +37,48 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
     process.exit(1);
   }
 
-  // 解析参数
+  // 解析参数（支持 --key value 和 --key=value 两种格式）
   const args: Record<string, string | number | boolean> = {};
-  for (const argDef of skill.meta.args) {
-    const idx = rawArgs.indexOf(`--${argDef.name}`);
-    if (idx !== -1 && rawArgs[idx + 1]) {
-      const val = rawArgs[idx + 1];
-      args[argDef.name] = argDef.type === 'number' ? Number(val) : val;
+  const unknownFlags: string[] = [];
+
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (!arg.startsWith('--')) {
+      unknownFlags.push(arg);
+      continue;
     }
-    if (rawArgs.includes(`--${argDef.name}`) && !args[argDef.name]) {
-      args[argDef.name] = true;
+
+    // --key=value 格式
+    if (arg.includes('=')) {
+      const [key, ...rest] = arg.slice(2).split('=');
+      const val = rest.join('=');
+      const matchedArg = skill.meta.args.find(a => a.name === key);
+      if (matchedArg) {
+        args[matchedArg.name] = matchedArg.type === 'number' ? Number(val) : val;
+      } else {
+        unknownFlags.push(`--${key}`);
+      }
+      continue;
     }
+
+    // --key value 格式
+    const matchedArg = skill.meta.args.find(a => a.name === arg.slice(2));
+    if (matchedArg) {
+      const next = rawArgs[i + 1];
+      if (next && !next.startsWith('--')) {
+        args[matchedArg.name] = matchedArg.type === 'number' ? Number(next) : next;
+        i++; // skip next
+      } else {
+        args[matchedArg.name] = true;
+      }
+    } else {
+      unknownFlags.push(arg);
+    }
+  }
+
+  // 未知 flag 检测
+  if (unknownFlags.length > 0) {
+    log.warn(`Unknown argument(s): ${unknownFlags.join(', ')}`);
   }
 
   // 必填参数校验

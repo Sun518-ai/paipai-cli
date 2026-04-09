@@ -16,15 +16,42 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
     steps: [],
   };
 
-  // 1. YAML frontmatter: name / description（含 >- 折叠格式）
+  // 1. YAML frontmatter: name / description / triggers / steps（含 >- 折叠格式）
   const front = content.match(/^---\n([\s\S]*?)\n---\n?/);
   if (front) {
     const frontLines = front[1].split('\n');
     let i = 0;
+    let currentListKey: string | null = null;
+    let currentList: string[] = [];
+
+    const flushList = () => {
+      if (!currentListKey || currentList.length === 0) return;
+      if (currentListKey === 'triggers') meta.triggers = currentList;
+      else if (currentListKey === 'steps') meta.steps = currentList;
+      currentList = [];
+      currentListKey = null;
+    };
+
     while (i < frontLines.length) {
-      const m = frontLines[i].match(/^(\w+):\s*(.*)/);
-      if (!m) { i++; continue; }
+      const line = frontLines[i];
+      const m = line.match(/^(\w+):\s*(.*)/);
+
+      if (!m) {
+        // 可能是 list item continuation（缩进行）
+        if (/^\s+-\s+/.test(line) || (/^\s/.test(line) && currentList.length > 0)) {
+          // 缩进的 list item
+          const itemM = line.match(/^\s+-\s+(.*)/);
+          if (itemM) currentList.push(itemM[1].trim());
+        }
+        i++;
+        continue;
+      }
+
       const [, key, firstVal] = m;
+
+      // 遇到新 key，先 flush 前一个 list
+      if (['name', 'description'].includes(key)) flushList();
+
       if (key === 'name') {
         meta.name = firstVal.trim();
       } else if (key === 'description') {
@@ -41,9 +68,23 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
         } else {
           meta.description = firstVal.replace(/^['"]|['"]$/g, '').trim();
         }
+      } else if (key === 'triggers' || key === 'steps') {
+        // 开始新的 list
+        flushList();
+        currentListKey = key;
+        if (firstVal.trim()) currentList.push(firstVal.replace(/^["']|["']$/g, ''));
+        // 检查后续缩进行（inline YAML list）
+        while (i + 1 < frontLines.length && /^\s+-\s+/.test(frontLines[i + 1])) {
+          i++;
+          const itemM = frontLines[i].match(/^\s+-\s+(.*)/);
+          if (itemM) currentList.push(itemM[1].trim());
+        }
+      } else {
+        // args 在 frontmatter 里暂不支持，跳过
       }
       i++;
     }
+    flushList();
     content = content.slice(front[0].length);
   }
 
