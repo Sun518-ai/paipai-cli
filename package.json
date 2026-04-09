@@ -1,0 +1,13 @@
+{
+  "name": "paipai-cli",
+  "version": "0.1.0",
+  "description": "AI Skill CLI framework — built with bun",
+  "type": "module",
+  "bin": {
+    "paipai": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  }
+}
