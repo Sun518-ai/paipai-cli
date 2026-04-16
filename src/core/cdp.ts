@@ -77,7 +77,19 @@ tell application "Google Chrome"
     return execute tab ${tabIndex} javascript "${escapedJs}"
   end tell
 end tell`;
-  return await runAppleScript(script);
+  try {
+    return await runAppleScript(script);
+  } catch (err) {
+    const msg = (err as Error).message || '';
+    if (msg.includes('AppleScript is turned off') || msg.includes('Allow JavaScript from Apple Events')) {
+      throw new Error(
+        'Chrome 未开启 AppleScript JS 执行权限。\n'
+        + '请在 Chrome 菜单栏中：View → Developer → Allow JavaScript from Apple Events\n'
+        + '开启后重新运行即可。',
+      );
+    }
+    throw err;
+  }
 }
 
 /** 关闭指定标签页 */

@@ -14,8 +14,8 @@ const LOCAL_FALLBACK_USERDATA = join(homedir(), '.paipai', 'userdata');
 
 /**
  * 获取用户数据根目录：
- * - Mira 环境: /opt/tiger/mira_nas/userdata/$USERID（NAS 不可写时 fallback 到 ~/.paipai/userdata/$USERID）
- * - 本地: <skillDir>/.userdata
+ * - Mira 环境（NAS 可写）: /opt/tiger/mira_nas/userdata/$USERID
+ * - 其他情况统一: ~/.paipai/userdata[/$USERID]
  */
 export async function getUserdataBaseDir(skill: Skill): Promise<string> {
   const userId = process.env.MIRA_CURRENT_USERID;
@@ -28,7 +28,7 @@ export async function getUserdataBaseDir(skill: Skill): Promise<string> {
       return join(LOCAL_FALLBACK_USERDATA, userId);
     }
   }
-  return join(skill.dir, '.userdata');
+  return LOCAL_FALLBACK_USERDATA;
 }
 
 /**

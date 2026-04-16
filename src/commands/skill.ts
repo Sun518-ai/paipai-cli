@@ -1,6 +1,7 @@
 // src/commands/skill.ts — paipai skill list / run / init / remove
 
-import { join, relative } from 'node:path';
+import { join, relative, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile, readdir, rm } from 'node:fs/promises';
 import { loadAllSkills } from '../core/loader.ts';
@@ -9,7 +10,8 @@ import { ensureAuth, ensureAuthHeaders, getCookiePath, getLocalStoragePath, ensu
 import { log } from '../utils/log.ts';
 import type { Skill } from '../core/types.ts';
 
-const SKILLS_DIR = join(process.cwd(), 'skills');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SKILLS_DIR = join(__dirname, '..', 'skills');
 
 export async function cmdSkillList() {
   const skills = await loadAllSkills(SKILLS_DIR);
@@ -135,6 +137,7 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
     const cookiePath = await getCookiePath(skill);
 
     envOverrides.USERDATA_DIR = userdataBaseDir;
+    envOverrides.MIRA_USERDATA_DIR = userdataBaseDir;
     envOverrides.SKILL_USERDATA_DIR = userdataDir;
     envOverrides.COOKIE_FILE = cookiePath;
     const lsPath = await getLocalStoragePath(skill);
