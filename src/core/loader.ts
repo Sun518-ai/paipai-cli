@@ -79,6 +79,23 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
           const itemM = frontLines[i].match(/^\s+-\s+(.*)/);
           if (itemM) currentList.push(itemM[1].trim());
         }
+      } else if (key === 'login_url') {
+        meta.loginUrl = firstVal.trim();
+      } else if (key === 'auth_headers') {
+        // Support inline list: auth_headers: [AUTHORIZATION, X-Token]
+        // or multi-line list
+        const inline = firstVal.match(/^\[(.+)\]$/);
+        if (inline) {
+          meta.authHeaders = inline[1].split(',').map(s => s.trim()).filter(Boolean);
+        } else {
+          meta.authHeaders = [];
+          if (firstVal.trim()) meta.authHeaders.push(firstVal.trim());
+          while (i + 1 < frontLines.length && /^\s+-\s+/.test(frontLines[i + 1])) {
+            i++;
+            const itemM = frontLines[i].match(/^\s+-\s+(.*)/);
+            if (itemM) meta.authHeaders.push(itemM[1].trim());
+          }
+        }
       } else {
         // args 在 frontmatter 里暂不支持，跳过
       }
@@ -97,7 +114,7 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
     const line = raw.trim();
     if (!line) continue;
 
-    // 章节标题（如 ## args、## triggers）
+    // 章节标题（如 ## args、## triggers、## 参数说明）
     if (line.startsWith('#')) {
       // flush previous args
       if (currentSection === '## args' && currentArgs.name) {
@@ -105,6 +122,26 @@ function parseSkillMeta(content: string): Partial<SkillMeta> {
         currentArgs = {};
       }
       currentSection = line;
+      continue;
+    }
+
+    // Markdown 表格行解析（适用于 ## 参数说明 / ## args 区段）
+    if ((currentSection === '## 参数说明' || currentSection === '## args') && line.startsWith('|')) {
+      // 跳过表头分隔行（如 |------|------|------| ）
+      if (/^\|[\s-|]+\|$/.test(line)) continue;
+      const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+      // 至少需要参数名和说明两列；跳过表头行（第一列为 "参数"）
+      if (cells.length >= 2 && !/^参数$/.test(cells[0])) {
+        const rawName = cells[0].replace(/`/g, '').replace(/^--/, '');
+        const required = cells.length >= 3 ? cells[1] === '是' : false;
+        const description = cells.length >= 3 ? cells[2] : cells[1];
+        meta.args!.push({
+          name: rawName,
+          type: 'string',
+          required,
+          description,
+        } as SkillArg);
+      }
       continue;
     }
 
@@ -187,6 +224,8 @@ async function loadSkillFromDir(dir: string): Promise<Skill | null> {
   const triggers = raw.triggers || [];
   const args = raw.args || [];
   const steps = raw.steps || [];
+  const loginUrl = raw.loginUrl;
+  const authHeaders = raw.authHeaders;
 
   const mainPath = fileExistsSync(mainShPath) ? mainShPath
     : fileExistsSync(mainTsPath) ? mainTsPath : '';
@@ -203,7 +242,7 @@ async function loadSkillFromDir(dir: string): Promise<Skill | null> {
     } catch {}
   }
 
-  return { name, dir, meta: { name, description, triggers, args, steps }, mainPath, stepPaths };
+  return { name, dir, meta: { name, description, triggers, args, steps, loginUrl, authHeaders }, mainPath, stepPaths };
 }
 
 function basename(path: string): string {

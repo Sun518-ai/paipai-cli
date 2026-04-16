@@ -1,31 +1,13 @@
+#!/usr/bin/env bun
 // src/index.ts — CLI 入口
 
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { log } from './utils/log.ts';
-import { cmdSkillList, cmdSkillRun, cmdSkillInit, cmdSkillRemove } from './commands/skill.ts';
+import { cmdSkillList, cmdSkillRun, cmdSkillInit, cmdSkillRemove, cmdAuthClear } from './commands/skill.ts';
+import { cmdEnvList, cmdEnvSet, cmdEnvUnset } from './commands/env.ts';
 import { cmdDoctor } from './commands/doctor.ts';
+import { loadRcToEnv } from './core/rc.ts';
 
-// 加载 ~/.paipairc 配置文件，注入环境变量
-function loadRc() {
-  const rcPath = join(homedir(), '.paipairc');
-  if (!existsSync(rcPath)) return;
-  const lines = readFileSync(rcPath, 'utf-8').split('\n');
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
-    if (key && val && !process.env[key]) {
-      process.env[key] = val;
-    }
-  }
-}
-
-loadRc();
+loadRcToEnv();
 
 const [, , cmd, subcmd, ...rest] = process.argv;
 
@@ -38,6 +20,10 @@ function printHelp() {
     paipai run <name> [--arg value...]    运行指定技能
     paipai skill:init <name>              创建新技能
     paipai skill:remove <name>            删除技能
+    paipai auth clear <name>              清除技能授权
+    paipai env list                        列出全局环境变量
+    paipai env set <KEY> [VALUE]          设置环境变量
+    paipai env unset <KEY>                删除环境变量
     paipai doctor                          环境检查
     paipai help                            显示帮助
 
@@ -101,8 +87,49 @@ async function main() {
       break;
     }
 
+    case 'env': {
+      if (subcmd === 'list' || !subcmd) {
+        await cmdEnvList();
+      } else if (subcmd === 'set') {
+        const key = rest[0];
+        if (!key) {
+          log.error('Usage: paipai env set <KEY> [VALUE]');
+          process.exit(1);
+        }
+        await cmdEnvSet(key, rest[1]);
+      } else if (subcmd === 'unset') {
+        const key = rest[0];
+        if (!key) {
+          log.error('Usage: paipai env unset <KEY>');
+          process.exit(1);
+        }
+        cmdEnvUnset(key);
+      } else {
+        log.error(`Unknown subcommand: env ${subcmd}`);
+        printHelp();
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'doctor': {
       await cmdDoctor();
+      break;
+    }
+
+    case 'auth': {
+      if (subcmd === 'clear') {
+        const name = rest[0];
+        if (!name) {
+          log.error('Usage: paipai auth clear <skill-name>');
+          process.exit(1);
+        }
+        await cmdAuthClear(name);
+      } else {
+        log.error(`Unknown subcommand: auth ${subcmd || ''}`);
+        printHelp();
+        process.exit(1);
+      }
       break;
     }
 

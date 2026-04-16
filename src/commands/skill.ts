@@ -1,9 +1,11 @@
 // src/commands/skill.ts — paipai skill list / run / init / remove
 
 import { join, relative } from 'node:path';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile, readdir, rm } from 'node:fs/promises';
 import { loadAllSkills } from '../core/loader.ts';
 import { runSkill, runStep } from '../core/runner.ts';
+import { ensureAuth, ensureAuthHeaders, getCookiePath, getLocalStoragePath, ensureSkillUserdataDir, getUserdataBaseDir } from '../core/auth.ts';
 import { log } from '../utils/log.ts';
 import type { Skill } from '../core/types.ts';
 
@@ -29,6 +31,30 @@ export async function cmdSkillList() {
   console.log();
 }
 
+function printSkillHelp(skill: Skill) {
+  const desc = skill.meta.description || '(no description)';
+  console.log(`\n  🧩 ${skill.name} — ${desc}\n`);
+  console.log(`  Usage: paipai run ${skill.name} [options]\n`);
+
+  if (skill.meta.args.length === 0) {
+    console.log('  No arguments.\n');
+    return;
+  }
+
+  console.log('  Options:\n');
+  for (const a of skill.meta.args) {
+    const flag = `--${a.name}`;
+    const req = a.required ? '(required)' : '(optional)';
+    const def = a.default !== undefined ? `[default: ${a.default}]` : '';
+    const descPart = a.description || '';
+    console.log(`    ${flag.padEnd(20)} ${a.type.padEnd(10)} ${req} ${def}`);
+    if (descPart) {
+      console.log(`${''.padEnd(24)} ${descPart}`);
+    }
+  }
+  console.log();
+}
+
 export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
   const skills = await loadAllSkills(SKILLS_DIR);
   const skill = skills.find(s => s.name === skillName);
@@ -37,14 +63,20 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
     process.exit(1);
   }
 
+  // --help / -h: 打印 skill 参数列表
+  if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
+    printSkillHelp(skill);
+    return;
+  }
+
   // 解析参数（支持 --key value 和 --key=value 两种格式）
   const args: Record<string, string | number | boolean> = {};
-  const unknownFlags: string[] = [];
+  const positionalArgs: string[] = [];
 
   for (let i = 0; i < rawArgs.length; i++) {
     const arg = rawArgs[i];
     if (!arg.startsWith('--')) {
-      unknownFlags.push(arg);
+      positionalArgs.push(arg);
       continue;
     }
 
@@ -53,32 +85,20 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
       const [key, ...rest] = arg.slice(2).split('=');
       const val = rest.join('=');
       const matchedArg = skill.meta.args.find(a => a.name === key);
-      if (matchedArg) {
-        args[matchedArg.name] = matchedArg.type === 'number' ? Number(val) : val;
-      } else {
-        unknownFlags.push(`--${key}`);
-      }
+      args[key] = matchedArg?.type === 'number' ? Number(val) : val;
       continue;
     }
 
     // --key value 格式
-    const matchedArg = skill.meta.args.find(a => a.name === arg.slice(2));
-    if (matchedArg) {
-      const next = rawArgs[i + 1];
-      if (next && !next.startsWith('--')) {
-        args[matchedArg.name] = matchedArg.type === 'number' ? Number(next) : next;
-        i++; // skip next
-      } else {
-        args[matchedArg.name] = true;
-      }
+    const key = arg.slice(2);
+    const matchedArg = skill.meta.args.find(a => a.name === key);
+    const next = rawArgs[i + 1];
+    if (next && !next.startsWith('--')) {
+      args[key] = matchedArg?.type === 'number' ? Number(next) : next;
+      i++; // skip next
     } else {
-      unknownFlags.push(arg);
+      args[key] = true;
     }
-  }
-
-  // 未知 flag 检测
-  if (unknownFlags.length > 0) {
-    log.warn(`Unknown argument(s): ${unknownFlags.join(', ')}`);
   }
 
   // 必填参数校验
@@ -102,14 +122,38 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
   log.info(`Running skill: ${skill.name}`);
   log.debug(`Args: ${JSON.stringify(args)}`);
 
-  const ctx = { skill, args, skillDir: skill.dir };
+  // Authorization check (TUI flow if needed)
+  const envOverrides = await ensureAuth(skill);
+
+  // Auth headers check (e.g. AUTHORIZATION)
+  await ensureAuthHeaders(skill, envOverrides);
+
+  // Initialize userdata directories and pass as env vars
+  try {
+    const userdataBaseDir = await getUserdataBaseDir(skill);
+    const userdataDir = await ensureSkillUserdataDir(skill);
+    const cookiePath = await getCookiePath(skill);
+
+    envOverrides.USERDATA_DIR = userdataBaseDir;
+    envOverrides.SKILL_USERDATA_DIR = userdataDir;
+    envOverrides.COOKIE_FILE = cookiePath;
+    const lsPath = await getLocalStoragePath(skill);
+    envOverrides.LOCAL_STORAGE_FILE = lsPath;
+    log.debug(`Userdata base: ${userdataBaseDir}`);
+    log.debug(`Skill userdata: ${userdataDir}`);
+    log.debug(`Cookie file: ${cookiePath}`);
+  } catch (e) {
+    log.warn(`Failed to initialize userdata dir: ${(e as Error).message}`);
+  }
+
+  const ctx = { skill, args, positionalArgs, skillDir: skill.dir };
 
   if (skill.stepPaths.length > 0 && !skill.mainPath) {
     // 无 main.sh，按顺序执行各 step
     for (const step of skill.stepPaths) {
       const stepName = relative(skill.dir, step);
       log.info(`  → ${stepName}`);
-      const code = await runStep(step, ctx);
+      const code = await runStep(step, ctx, envOverrides);
       if (code !== 0) {
         log.error(`Step ${stepName} exited with code ${code}`);
         process.exit(code);
@@ -117,7 +161,7 @@ export async function cmdSkillRun(skillName: string, rawArgs: string[]) {
     }
   } else {
     // 执行 main.sh
-    const code = await runSkill(ctx);
+    const code = await runSkill(ctx, envOverrides);
     process.exit(code);
   }
 }
@@ -195,5 +239,44 @@ export async function cmdSkillRemove(name: string) {
   } catch (e) {
     log.error(`Failed to remove skill: ${skillDir}`);
     process.exit(1);
+  }
+}
+
+export async function cmdAuthClear(name: string) {
+  const skills = await loadAllSkills(SKILLS_DIR);
+  const skill = skills.find(s => s.name === name);
+  if (!skill) {
+    log.error(`Skill "${name}" not found. Run "paipai skill list" to see available skills.`);
+    process.exit(1);
+  }
+
+  const cookiePath = await getCookiePath(skill);
+  const lsPath = await getLocalStoragePath(skill);
+  let cleared = false;
+
+  if (existsSync(cookiePath)) {
+    try {
+      await rm(cookiePath);
+      log.success(`Cookie cleared for "${name}".`);
+      cleared = true;
+    } catch (e) {
+      log.error(`Failed to remove cookie: ${cookiePath}`);
+    }
+  }
+
+  if (existsSync(lsPath)) {
+    try {
+      await rm(lsPath);
+      log.success(`localStorage cleared for "${name}".`);
+      cleared = true;
+    } catch (e) {
+      log.error(`Failed to remove localStorage: ${lsPath}`);
+    }
+  }
+
+  if (!cleared) {
+    log.warn(`Skill "${name}" has no saved credentials.`);
+  } else {
+    log.info('Next run will re-authorize.');
   }
 }

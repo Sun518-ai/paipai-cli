@@ -6,11 +6,11 @@ import type { RunContext } from './types.ts';
 
 function buildEnv(args: Record<string, string | number | boolean>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(args).map(([k, v]) => [`SKILL_ARG_${k.toUpperCase().replace(/-/g, '_')}`, String(v)])
+    Object.entries(args).map(([k, v]) => [k.toUpperCase().replace(/-/g, '_'), String(v)])
   );
 }
 
-function runScript(scriptPath: string, ctx: RunContext): Promise<number> {
+function runScript(scriptPath: string, ctx: RunContext, envOverrides?: Record<string, string>): Promise<number> {
   return new Promise((resolve, reject) => {
     const { skill, args, skillDir } = ctx;
     const env = {
@@ -19,9 +19,10 @@ function runScript(scriptPath: string, ctx: RunContext): Promise<number> {
       SKILL_DIR: skillDir,
       PAIPAI_DEBUG: '1',
       ...buildEnv(args),
+      ...envOverrides,
     };
 
-    const child = spawn('bash', [scriptPath], {
+    const child = spawn('bash', [scriptPath, ...ctx.positionalArgs], {
       cwd: skillDir,
       env,
       stdio: 'inherit',
@@ -32,14 +33,14 @@ function runScript(scriptPath: string, ctx: RunContext): Promise<number> {
   });
 }
 
-export function runSkill(ctx: RunContext): Promise<number> {
+export function runSkill(ctx: RunContext, envOverrides?: Record<string, string>): Promise<number> {
   const { skill } = ctx;
   if (!skill.mainPath) {
     return Promise.reject(new Error(`Skill "${skill.name}" has no main.sh or main.ts`));
   }
-  return runScript(skill.mainPath, ctx);
+  return runScript(skill.mainPath, ctx, envOverrides);
 }
 
-export async function runStep(stepPath: string, ctx: RunContext): Promise<number> {
-  return runScript(stepPath, ctx);
+export async function runStep(stepPath: string, ctx: RunContext, envOverrides?: Record<string, string>): Promise<number> {
+  return runScript(stepPath, ctx, envOverrides);
 }

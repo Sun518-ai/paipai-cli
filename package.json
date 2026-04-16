@@ -9,5 +9,8 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.2.0"
   }
 }

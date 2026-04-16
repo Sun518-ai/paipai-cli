@@ -6,6 +6,8 @@ export interface SkillMeta {
   triggers: string[];
   args: SkillArg[];
   steps: string[]; // step 文件名列表
+  loginUrl?: string; // SKILL.md frontmatter login_url
+  authHeaders?: string[]; // SKILL.md frontmatter auth_headers, e.g. ['AUTHORIZATION']
 }
 
 export interface SkillArg {
@@ -27,6 +29,7 @@ export interface Skill {
 export interface RunContext {
   skill: Skill;
   args: Record<string, string | number | boolean>;
+  positionalArgs: string[];
   skillDir: string;
 }
 
